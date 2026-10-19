@@ -1,15 +1,13 @@
-openapi: 3.0.3
+openapi: 3.0.1
 
 info:
   title: VirusTotal File Hash Threat Intelligence
   description: >
-    Enriches a file hash (MD5, SHA-1, or SHA-256) with multi-engine
-    threat-intelligence from the VirusTotal API v3. Returns the aggregate
-    detection verdict (last_analysis_stats), per-engine results, community
-    reputation and votes, popular threat classification (suggested label,
-    malware families and categories), observed file names, file metadata,
-    submission timestamps, and tags.
-  version: 1.0.0
+    Enriches a file hash with a scoped VirusTotal API v3 file report. The
+    operation uses VirusTotal's fields query parameter to avoid returning large
+    objects such as last_analysis_results, PE sections, imports, and full name
+    lists.
+  version: 1.0.1
 
 servers:
   - url: https://www.virustotal.com/api/v3
@@ -19,51 +17,43 @@ security:
   - VTApiKey: []
 
 components:
-
   securitySchemes:
     VTApiKey:
       type: apiKey
       in: header
       name: x-apikey
-      description: >
-        VirusTotal API key. Injected by Security Copilot from the plugin
-        manifest Authorization block. VirusTotal uses a raw key header with
-        NO scheme prefix — do NOT prepend 'Bearer'.
+      description: VirusTotal API key. Use the raw x-apikey header value with no Bearer prefix.
 
   schemas:
-
     LastAnalysisStats:
       type: object
-      description: >
-        Aggregate count of engine verdicts. The headline triage signal:
-        malicious + suspicious relative to the total number of engines.
       properties:
         malicious:
           type: integer
-          example: 58
         suspicious:
           type: integer
-          example: 2
         undetected:
           type: integer
-          example: 12
         harmless:
           type: integer
-          example: 0
         timeout:
           type: integer
-          example: 0
         type-unsupported:
           type: integer
-          example: 4
+
+    TotalVotes:
+      type: object
+      properties:
+        harmless:
+          type: integer
+        malicious:
+          type: integer
 
     PopularThreatClassification:
       type: object
-      description: VirusTotal's normalized malware family / category attribution.
       properties:
         suggested_threat_label:
           type: string
-          example: "trojan.emotet/heur"
         popular_threat_category:
           type: array
           items:
@@ -71,10 +61,8 @@ components:
             properties:
               count:
                 type: integer
-                example: 34
               value:
                 type: string
-                example: "trojan"
         popular_threat_name:
           type: array
           items:
@@ -82,70 +70,89 @@ components:
             properties:
               count:
                 type: integer
-                example: 21
               value:
                 type: string
-                example: "emotet"
 
-    TotalVotes:
+    VirusTotalFileReport:
       type: object
-      description: VirusTotal community reputation votes.
+      additionalProperties: true
       properties:
-        harmless:
-          type: integer
-          example: 3
-        malicious:
-          type: integer
-          example: 147
+        data:
+          type: object
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+              description: Canonical SHA-256 VirusTotal file object ID.
+            type:
+              type: string
+            attributes:
+              type: object
+              additionalProperties: true
+              properties:
+                last_analysis_stats:
+                  $ref: '#/components/schemas/LastAnalysisStats'
+                reputation:
+                  type: integer
+                total_votes:
+                  $ref: '#/components/schemas/TotalVotes'
+                popular_threat_classification:
+                  $ref: '#/components/schemas/PopularThreatClassification'
+                sandbox_verdicts:
+                  type: object
+                  additionalProperties: true
+                meaningful_name:
+                  type: string
+                names:
+                  type: array
+                  items:
+                    type: string
+                type_description:
+                  type: string
+                type_tag:
+                  type: string
+                magic:
+                  type: string
+                size:
+                  type: integer
+                signature_info:
+                  type: object
+                  additionalProperties: true
+                exiftool:
+                  type: object
+                  additionalProperties: true
+                pe_info:
+                  type: object
+                  additionalProperties: true
+                first_submission_date:
+                  type: integer
+                last_analysis_date:
+                  type: integer
+        error:
+          type: object
+          additionalProperties: true
+          properties:
+            code:
+              type: string
+            message:
+              type: string
 
 paths:
-
   /files/{id}:
     get:
       operationId: GetFileReport
-      summary: Get VirusTotal multi-engine threat intelligence for a file hash
+      summary: Get a scoped VirusTotal file report for a file hash
       description: |
-        Retrieves the VirusTotal report for a given file hash (MD5, SHA-1, or
-        SHA-256): the aggregate multi-engine detection verdict
-        (last_analysis_stats), community reputation and votes, popular threat
-        classification (suggested label, malware families and categories), the
-        file's meaningful display name, file type/size metadata, and submission
-        timestamps.
+        Retrieves a scoped VirusTotal file report for an MD5, SHA-1, or SHA-256
+        hash. Always send the `fields` query parameter so VirusTotal returns
+        only the fields needed for the analyst report and excludes high-volume
+        fields such as `last_analysis_results`.
 
-        NOTE: this response is intentionally SCOPED to the aggregate triage
-        fields. The per-engine breakdown (last_analysis_results) and the full
-        observed-names list are deliberately NOT returned, to keep the payload
-        small. Derive the detection ratio from last_analysis_stats
-        (malicious / total), NOT from a per-engine list.
-
-        Use this operation when:
-        - The user provides a file hash and asks for its VirusTotal verdict,
-          detection ratio, or reputation
-        - The user asks "how many engines flag this hash" or "is this hash
-          malicious on VirusTotal"
-        - An incident or alert contains a file hash to be enriched
-        - Malware triage requires multi-engine corroboration or family attribution
-
-        Output format rules:
-        - Lead with the detection ratio: malicious / total engines
-          (total = malicious + suspicious + undetected + harmless + timeout +
-          type-unsupported), and the reputation score
-        - Show the popular_threat_classification suggested_threat_label
-          prominently, plus the top malware families and categories
-        - Show meaningful_name — it reveals how the file is disguised
-        - Show file metadata: type_description and size
-        - Show last_analysis_date (Unix epoch seconds — convert to UTC)
-        - Show total_votes (community harmless vs malicious)
-        - Always output the direct VirusTotal GUI link:
-          https://www.virustotal.com/gui/file/{data.id}
-        - Never fabricate a verdict when the hash is not found (HTTP 404) —
-          state that VirusTotal has no record of the hash
-
-        #ExamplePrompts Check VirusTotal for hash 44d88612fea8a8f36de82e1278abb02f
-        #ExamplePrompts Look up SHA256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f on VirusTotal
-        #ExamplePrompts Is this file hash malicious on VirusTotal: 896ccf899b9d45c1c119ba35d6cce6e16cc10dd6a7f502f88fb50429a6e5cf4c
-        #ExamplePrompts GetFileReport 44d88612fea8a8f36de82e1278abb02f
-        #ExamplePrompts What is the VirusTotal detection ratio for 5d41402abc4b2a76b9719d911017c592
+        The default `fields` value intentionally includes only:
+        id, type, aggregate detection stats, reputation and votes, popular
+        threat classification, sandbox verdicts, one or two names, concise file
+        metadata, signature/resource metadata, first submission date, and last
+        analysis date.
       parameters:
         - name: id
           in: path
@@ -153,80 +160,32 @@ paths:
           description: >
             File hash to look up. Accepts MD5 (32 hex chars), SHA-1 (40 hex
             chars), or SHA-256 (64 hex chars). Pass the raw hex string with no
-            prefix and no quotes. If the value is defanged, re-fang it first.
+            prefix and no quotes.
           schema:
             type: string
-          example: "44d88612fea8a8f36de82e1278abb02f"
+          example: 44d88612fea8a8f36de82e1278abb02f
+        - name: fields
+          in: query
+          required: false
+          description: >
+            VirusTotal partial response field selector. Use the default value
+            exactly as provided to avoid large responses and agent timeouts.
+          schema:
+            type: string
+            default: data.id,data.type,data.attributes.last_analysis_stats,data.attributes.reputation,data.attributes.total_votes,data.attributes.popular_threat_classification,data.attributes.sandbox_verdicts,data.attributes.meaningful_name,data.attributes.names,data.attributes.type_description,data.attributes.type_tag,data.attributes.magic,data.attributes.size,data.attributes.signature_info,data.attributes.exiftool,data.attributes.pe_info.resource_details,data.attributes.first_submission_date,data.attributes.last_analysis_date
+          example: data.id,data.type,data.attributes.last_analysis_stats,data.attributes.reputation,data.attributes.total_votes,data.attributes.popular_threat_classification,data.attributes.sandbox_verdicts,data.attributes.meaningful_name,data.attributes.names,data.attributes.type_description,data.attributes.type_tag,data.attributes.magic,data.attributes.size,data.attributes.signature_info,data.attributes.exiftool,data.attributes.pe_info.resource_details,data.attributes.first_submission_date,data.attributes.last_analysis_date
       responses:
-        "200":
-          description: VirusTotal report for the file hash (scoped to aggregate triage fields).
+        '200':
+          description: Scoped VirusTotal report for the file hash.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  data:
-                    type: object
-                    additionalProperties: false
-                    properties:
-                      id:
-                        type: string
-                        description: SHA-256 of the file (canonical VT object id). Use for the GUI link.
-                        example: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
-                      type:
-                        type: string
-                        example: "file"
-                      attributes:
-                        type: object
-                        additionalProperties: false
-                        properties:
-                          last_analysis_stats:
-                            $ref: '#/components/schemas/LastAnalysisStats'
-                          reputation:
-                            type: integer
-                            description: >
-                              Community reputation score. Negative indicates the
-                              community considers the file malicious.
-                            example: -142
-                          total_votes:
-                            $ref: '#/components/schemas/TotalVotes'
-                          popular_threat_classification:
-                            $ref: '#/components/schemas/PopularThreatClassification'
-                          meaningful_name:
-                            type: string
-                            description: VT's best single display name for the file (disguise signal).
-                            example: "invoice_scan.exe"
-                          type_description:
-                            type: string
-                            description: Human-readable file type.
-                            example: "Win32 EXE"
-                          size:
-                            type: integer
-                            description: File size in bytes.
-                            example: 108358
-                          last_analysis_date:
-                            type: integer
-                            description: Unix epoch seconds of most recent analysis.
-                            example: 1747699200
-                  error:
-                    type: object
-                    additionalProperties: false
-                    description: Present only on error responses instead of data.
-                    properties:
-                      code:
-                        type: string
-                        example: "NotFoundError"
-                      message:
-                        type: string
-                        example: "File \"<hash>\" not found"
-        "400":
-          description: Bad request — the hash is malformed (not a valid MD5/SHA-1/SHA-256).
-        "401":
-          description: Unauthorized — invalid or missing x-apikey.
-        "404":
-          description: Not found — VirusTotal has no record of this hash.
-        "429":
-          description: >
-            Quota exceeded — the API key hit its rate limit (public keys are
-            capped at 4 requests/minute, 500/day). Retry after the window resets.
+                $ref: '#/components/schemas/VirusTotalFileReport'
+        '400':
+          description: Bad request. The hash is malformed or the fields parameter is invalid.
+        '401':
+          description: Unauthorized. The x-apikey value is invalid or missing.
+        '404':
+          description: Not found. VirusTotal has no record of this hash.
+        '429':
+          description: Quota exceeded or rate limited.
